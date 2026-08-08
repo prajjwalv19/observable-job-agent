@@ -1,6 +1,8 @@
 ---
 name: ship-next-change
 description: Find the next unfinished item in changes-required.md and run it through plan, implement, and review/merge — one item per invocation, no concurrency, run again for the next one.
+disable-model-invocation: true
+allowed-tools: Agent(job-scout-planner, job-scout-implementer, job-scout-reviewer) Read Edit Bash
 ---
 
 # Ship the next open change
