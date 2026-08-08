@@ -76,7 +76,14 @@ def fetch_jobs(state: AgentState) -> dict:
         country = None
         remote = profile.remote_ok
 
-    jobs, sources = run_search(query=query, location=location, country=country, remote=remote, limit=settings.scout_max_jobs)
+    jobs, sources = run_search(
+        query=query,
+        location=location,
+        country=country,
+        remote=remote,
+        limit=settings.scout_max_jobs,
+        jsearch_extra_params=state.get("jsearch_extra_params"),
+    )
     jobs = _dedupe_with_existing(state.get("jobs", []), jobs)[:MERGED_CEILING]
 
     return {

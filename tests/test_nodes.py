@@ -17,7 +17,7 @@ def test_fetch_jobs_uses_llm_tool_args(monkeypatch, sample_profile, sample_jobs)
     monkeypatch.setattr(fetch_mod, "get_chat_model", lambda *a, **k: llm)
     captured = {}
 
-    def fake_run_search(query, location, country, remote, limit):
+    def fake_run_search(query, location, country, remote, limit, **kwargs):
         captured.update(query=query, country=country, remote=remote)
         return sample_jobs, ["adzuna"]
 
@@ -28,6 +28,21 @@ def test_fetch_jobs_uses_llm_tool_args(monkeypatch, sample_profile, sample_jobs)
     assert out["jobs_sources"] == ["adzuna"]
     assert out["search_query"] == "ml engineer"
     assert out["llm_calls"] == 2
+
+
+def test_fetch_jobs_forwards_jsearch_extra_params(monkeypatch, sample_profile, sample_jobs):
+    llm = tool_calling_llm([{"name": "search_jobs", "args": {"query": "ml engineer"}}])
+    monkeypatch.setattr(fetch_mod, "get_chat_model", lambda *a, **k: llm)
+    seen = {}
+
+    def fake_run_search(**kwargs):
+        seen.update(kwargs)
+        return sample_jobs, ["jsearch"]
+
+    monkeypatch.setattr(fetch_mod, "run_search", fake_run_search)
+    extra = {"date_posted": "week"}
+    fetch_jobs({"profile": sample_profile, "llm_calls": 0, "jsearch_extra_params": extra})
+    assert seen["jsearch_extra_params"] == extra
 
 
 def test_fetch_jobs_no_tool_call_fallback(monkeypatch, sample_profile, sample_jobs):
