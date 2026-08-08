@@ -87,7 +87,11 @@ class JSearchSource:
     """
 
     name = "jsearch"
-    BASE = "https://api.openwebninja.com/jsearch/search-v2"
+    # TEMP LOCAL PATCH (uncommitted): repo originally targeted OpenWeb Ninja's
+    # direct API (api.openwebninja.com, X-API-Key). Our key is RapidAPI-issued,
+    # so this points at the RapidAPI-hosted JSearch instead. Not committed —
+    # revisit via changes-required.md so it goes through the real review pipeline.
+    BASE = "https://jsearch.p.rapidapi.com/search-v2"
 
     # NOTE: this 15.0s default is the subject of the Ollie demo in docs/ollie.md
     # — measured spending its full timeout for zero jobs on every search, and
@@ -114,7 +118,12 @@ class JSearchSource:
         if remote:
             params["work_from_home"] = "true"
         try:
-            resp = httpx.get(self.BASE, params=params, headers={"X-API-Key": self.api_key}, timeout=self.timeout)
+            resp = httpx.get(
+                self.BASE,
+                params=params,
+                headers={"x-rapidapi-key": self.api_key, "x-rapidapi-host": "jsearch.p.rapidapi.com"},
+                timeout=self.timeout,
+            )
             resp.raise_for_status()
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError, ValueError):

@@ -15,6 +15,19 @@ const items = args
 
 log(`Shipping ${items.length} change(s) from changes-required.md, one PR each.`)
 
+const REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['APPROVE', 'REJECT'] },
+    summary: { type: 'string', description: 'One or two sentences: what shipped, or exactly what is blocking' },
+    merged: { type: 'boolean', description: 'True only if this reviewer actually ran gh pr merge successfully' },
+    pr_url: { type: 'string', description: 'The PR URL, if one was opened (omit/empty if REJECT and no PR was opened)' },
+    commit_sha: { type: 'string', description: 'The resulting squash-merge commit SHA on main, if merged' },
+    artifact_path: { type: 'string', description: 'Repo-relative path to any non-code deliverable this change produced (e.g. a research doc) — separate from code files' },
+  },
+  required: ['verdict', 'summary', 'merged'],
+}
+
 const results = await pipeline(
   items,
   (item, _item, i) =>
@@ -34,20 +47,22 @@ const results = await pipeline(
     ),
   (implReport, item, i) =>
     agent(
-      `Independently review this implementation. Re-run tests yourself. On APPROVE, open the PR and squash-merge it. On REJECT, do not merge — report exactly what's blocking.\n\nOriginal request:\n${item}\n\nImplementer's report:\n${implReport}`,
+      `Independently review this implementation. Re-run tests yourself. On APPROVE, open the PR and squash-merge it, then report the PR URL and merge commit SHA. On REJECT, do not merge — report exactly what's blocking. If main has moved and there's a real conflict with another item from this same batch, that is a REJECT (send back to rebase), not something to resolve yourself.\n\nOriginal request:\n${item}\n\nImplementer's report:\n${implReport}`,
       {
         agentType: 'job-scout-reviewer',
         phase: 'Review & Merge',
         label: `review #${i + 1}`,
         isolation: 'worktree',
+        schema: REVIEW_SCHEMA,
       }
     )
 )
 
-const outcomes = items.map((item, i) => ({ item, result: results[i] }))
-const failed = outcomes.filter(o => o.result === null)
-if (failed.length) {
-  log(`${failed.length}/${items.length} item(s) hit a hard agent failure (not a review rejection) — see outcomes.`)
-}
+const outcomes = items.map((item, i) => ({ item, review: results[i] }))
+const failed = outcomes.filter(o => o.review === null)
+const approved = outcomes.filter(o => o.review?.verdict === 'APPROVE' && o.review?.merged)
+const rejected = outcomes.filter(o => o.review?.verdict === 'REJECT')
+
+log(`${approved.length} merged, ${rejected.length} rejected (need a retry pass), ${failed.length} hard agent failure(s).`)
 
 return outcomes

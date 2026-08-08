@@ -42,6 +42,16 @@ Do not open a PR. Report back exactly what's blocking (failing test names/output
 
 If `gh pr merge` fails (e.g. branch protection, required status check not configured yet) — report the exact error rather than retrying blindly or falling back to a raw `git merge`/`push --force` to `main`. A blocked merge is a stop-and-report situation, not something to route around.
 
+## Structured output
+
+When invoked through the `ship-changes` pipeline you will be forced to call a `StructuredOutput` tool with your verdict — fill it in honestly, matching what you actually did, not what you intended:
+- `verdict`: `APPROVE` or `REJECT`.
+- `summary`: one or two sentences — what shipped, or exactly what's blocking.
+- `merged`: `true` only if you personally ran `gh pr merge` and it succeeded. Never `true` on a REJECT.
+- `pr_url`: the PR URL, if one was opened.
+- `commit_sha`: the resulting squash-merge commit SHA on `main`, if merged.
+- `artifact_path`: repo-relative path to any non-code deliverable the change produced (e.g. a research `.md` file), separate from the code diff itself — this is what lets the change get linked back to its item in `changes-required.md`.
+
 ## Hard boundaries
 - Never merge on a REJECT verdict, no matter how small the issue seems.
 - Never touch `.env`, never print/log a secret value found anywhere in the diff.
