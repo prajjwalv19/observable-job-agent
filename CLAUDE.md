@@ -35,4 +35,10 @@ This is a fork of `jamwithai/observable-job-agent` (`upstream` remote) being cus
 
 ## Git / PR workflow for this fork
 
-One `changes-required.md` item = one branch = one PR = one squash-merged commit on `main`. See `.claude/agents/job-scout-planner.md`, `job-scout-implementer.md`, `job-scout-reviewer.md` for the three-stage pipeline (plan → implement+test → independent review, verify, and only-on-approval merge). `origin` = the user's fork (`prajjwalv19/observable-job-agent`); `upstream` = `jamwithai/observable-job-agent` (reference only, not pushed to).
+One `changes-required.md` item = one branch = one PR = one squash-merged commit on `main`. `origin` = the user's fork (`prajjwalv19/observable-job-agent`); `upstream` = `jamwithai/observable-job-agent` (reference only, not pushed to).
+
+`changes-required.md` itself lives **one directory above this repo** (`/mnt/d/Coding/llmProjects/job-hunt/changes-required.md`), not inside it.
+
+**Primary mechanism**: run the `/ship-next-change` skill (`.claude/skills/ship-next-change/SKILL.md`) — finds the next non-struck-through item, runs it through `job-scout-planner` → `job-scout-implementer` → `job-scout-reviewer` (all in `.claude/agents/`), and on approval marks the item done in `changes-required.md` (strikethrough + PR link/artifact path). **One item per invocation, run it again for the next one.** This exists specifically instead of batch-processing every open item at once, after concurrent items (two both touching the JSearch query/param UI) risked colliding with each other mid-flight.
+
+A batch alternative (`.claude/workflows/ship-changes.js`, run via the `Workflow` tool) also exists and processes every open item concurrently in one call — faster, but carries that same collision risk for related items and does **not** update `changes-required.md` itself (the workflow script has no filesystem access; that step would need to happen manually afterward, same as the skill's step 5). Prefer `/ship-next-change` unless there's a specific reason to batch.
