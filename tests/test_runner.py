@@ -53,6 +53,16 @@ def test_stream_search_yields_result(monkeypatch, sample_profile):
     assert result.failed is False
 
 
+def test_stream_search_forwards_jsearch_extra_params(monkeypatch, sample_profile):
+    fake = _FakeGraph()
+    _patch(monkeypatch, fake)
+    extra = {"date_posted": "week"}
+
+    list(stream_search(sample_profile, thread_id="t1", tags=["ui"], jsearch_extra_params=extra))
+
+    assert fake.captured_inputs["jsearch_extra_params"] == extra
+
+
 def test_stream_tailor_passes_only_selection_inputs(monkeypatch):
     # The acceptance-criterion invocation: nothing but the selection (and the
     # optional LinkedIn path) goes in; the checkpoint supplies the rest.

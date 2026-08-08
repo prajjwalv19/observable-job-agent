@@ -25,6 +25,7 @@ from job_scout.profile import extract_profile
 from job_scout.renderer import render_pdf
 from job_scout.runner import RunResult, TailorResult, stream_search, stream_tailor
 from job_scout.tools.cv_reader import CVReadError, extract_cv_text
+from job_scout.tools.jobs_api import JSEARCH_PARAM_REGISTRY
 from job_scout.tracing import opik_url, register_prompts
 
 CAPTION = "Prepares applications — never submits them."
@@ -567,6 +568,46 @@ def on_add_location(new_location: str, choices: list[str], selection: list[str],
     return choices, gr.update(choices=choices, value=selection), ""
 
 
+def _param_add_choices(selected: dict[str, object]) -> list[tuple[str, str]]:
+    """Dropdown choices for JSearch params not yet added, each showing an example value."""
+    return [(f"{key} — e.g. {spec['example']}", key) for key, spec in JSEARCH_PARAM_REGISTRY.items() if key not in selected]
+
+
+def _default_jsearch_param_value(kind: str) -> object:
+    """The starting value for a freshly-added param — unambiguous per its kind."""
+    if kind == "multi_enum":
+        return []
+    if kind == "enum":
+        return None
+    return ""
+
+
+def on_add_jsearch_param(param_key: str | None, params: dict[str, object]):
+    """Add a JSearch advanced filter to the chosen set, defaulted per its kind.
+
+    Outputs: (jsearch_params_state, param_add_dropdown).
+    """
+    if not param_key or param_key not in JSEARCH_PARAM_REGISTRY or param_key in params:
+        return params, gr.update()
+    kind = JSEARCH_PARAM_REGISTRY[param_key]["kind"]
+    updated = {**params, param_key: _default_jsearch_param_value(kind)}
+    return updated, gr.update(value=None, choices=_param_add_choices(updated))
+
+
+def on_update_jsearch_param(param_key: str, value: object, params: dict[str, object]) -> dict[str, object]:
+    """Set one advanced-filter's value in the shared state dict."""
+    return {**params, param_key: value}
+
+
+def on_remove_jsearch_param(param_key: str, params: dict[str, object]):
+    """Drop a JSearch advanced filter and put it back in the "Add" dropdown.
+
+    Outputs: (jsearch_params_state, param_add_dropdown).
+    """
+    updated = {k: v for k, v in params.items() if k != param_key}
+    return updated, gr.update(choices=_param_add_choices(updated))
+
+
 def _on_load(thread_id: str):
     """Restore a saved candidate.
 
@@ -631,12 +672,20 @@ def on_upload(file_path: str | None, thread_id: str):
     yield (*go, _profile_html(profile), cv_text, "", profile, choices, gr.update(choices=choices, value=selected))
 
 
-def on_find(cv_text: str, profile: Profile | None, thread_id: str, loc_selection: list[str]):
+def on_find(
+    cv_text: str,
+    profile: Profile | None,
+    thread_id: str,
+    loc_selection: list[str],
+    jsearch_params: dict[str, object] | None = None,
+):
     """Step 2 → 3: run the job-finding graph for the chosen locations and stream results.
 
     The search runs on the EFFECTIVE profile — extraction overridden by the
     chooser's ticked locations/remote — so the model builds its query around
     where the human actually wants to work, not where it guessed.
+    ``jsearch_params`` are the human-set advanced JSearch filters from the
+    "Advanced search filters" accordion (see ``JSEARCH_PARAM_REGISTRY``).
     Outputs: (page_profile, page_results, results_html, footer_html, job_select).
     """
     go = gr.update(visible=False), gr.update(visible=True)
@@ -650,7 +699,14 @@ def on_find(cv_text: str, profile: Profile | None, thread_id: str, loc_selection
 
     yield (*go, _loading_html("Searching for jobs…"), "", gr.update())
     result = RunResult()
-    for kind, payload in stream_search(effective, cv_text=cv_text, thread_id=thread_id, tags=["phase-2", "ui"]):
+    stream = stream_search(
+        effective,
+        cv_text=cv_text,
+        thread_id=thread_id,
+        tags=["phase-2", "ui"],
+        jsearch_extra_params=jsearch_params or {},
+    )
+    for kind, payload in stream:
         if kind == "status":
             yield (*go, _loading_html(str(payload)), "", gr.update())
         elif kind == "result":
@@ -710,7 +766,7 @@ def reset():
     Outputs: (page_start, page_profile, page_results, page_tailor, cv_file,
     cv_text_state, start_status, results_html, footer_html, thread_id,
     linkedin_zip_state, job_select, tailor_out, tailor_footer, pdf_btn, tex_btn,
-    loc_choices_state, loc_group).
+    loc_choices_state, loc_group, jsearch_params_state, param_add_dropdown).
     """
     new_thread_id = str(uuid4())
     candidate_store.clear_candidate()
@@ -733,6 +789,8 @@ def reset():
         gr.update(visible=False),
         [],
         gr.update(choices=[], value=[]),
+        {},
+        gr.update(choices=_param_add_choices({}), value=None),
     )
 
 
@@ -745,6 +803,7 @@ def build_app() -> gr.Blocks:
         cv_text_state = gr.State("")
         profile_state = gr.State(None)
         linkedin_zip_state = gr.State(None)
+        jsearch_params_state = gr.State({})
 
         gr.HTML(
             f'<div id="js-header"><div class="js-mark">{_MARK}<h1>Job Scout</h1></div>'
@@ -771,6 +830,51 @@ def build_app() -> gr.Blocks:
                 loc_new = gr.Textbox(label="", show_label=False, placeholder="Add another location…", scale=4)
                 loc_add = gr.Button("Add", size="sm", scale=0)
             find_btn = gr.Button("Find jobs", variant="primary", size="lg")
+            with gr.Accordion("Advanced search filters (JSearch)", open=False):
+                gr.HTML(
+                    '<p class="js-muted" style="font-size:0.86rem">Optional. Narrows the JSearch results only — '
+                    "Adzuna and Remotive don't support these. English-language results only.</p>"
+                )
+                param_add_dropdown = gr.Dropdown(
+                    label="Add search param…",
+                    show_label=True,
+                    choices=_param_add_choices({}),
+                    value=None,
+                    interactive=True,
+                )
+
+                @gr.render(inputs=[jsearch_params_state])
+                def _render_jsearch_param_rows(params: dict[str, object]):
+                    """One row per chosen advanced filter, wired to the shared state dict."""
+                    for key in params:
+                        spec = JSEARCH_PARAM_REGISTRY[key]
+                        with gr.Row():
+                            if spec["kind"] == "text":
+                                ctrl = gr.Textbox(
+                                    label=key,
+                                    value=params.get(key, ""),
+                                    placeholder=f"e.g. {spec['example']}",
+                                    scale=4,
+                                )
+                            else:
+                                ctrl = gr.Dropdown(
+                                    label=key,
+                                    choices=spec["choices"],
+                                    value=params.get(key),
+                                    multiselect=spec["kind"] == "multi_enum",
+                                    scale=4,
+                                )
+                            remove_btn = gr.Button("✕", size="sm", scale=0)
+                        ctrl.change(
+                            lambda value, k=key, current=params: on_update_jsearch_param(k, value, current),
+                            inputs=[ctrl],
+                            outputs=[jsearch_params_state],
+                        )
+                        remove_btn.click(
+                            lambda k=key, current=params: on_remove_jsearch_param(k, current),
+                            outputs=[jsearch_params_state, param_add_dropdown],
+                        )
+
             with gr.Accordion("Add your LinkedIn export (optional)", open=False):
                 gr.HTML(
                     '<p class="js-muted" style="font-size:0.86rem">Used only to enrich the tailoring step. '
@@ -828,9 +932,14 @@ def build_app() -> gr.Blocks:
             inputs=[loc_new, loc_choices_state, loc_group, profile_state, cv_text_state, thread_id],
             outputs=[loc_choices_state, loc_group, loc_new],
         )
+        param_add_dropdown.change(
+            on_add_jsearch_param,
+            inputs=[param_add_dropdown, jsearch_params_state],
+            outputs=[jsearch_params_state, param_add_dropdown],
+        )
         find_btn.click(
             on_find,
-            inputs=[cv_text_state, profile_state, thread_id, loc_group],
+            inputs=[cv_text_state, profile_state, thread_id, loc_group, jsearch_params_state],
             outputs=[page_profile, page_results, results_out, footer_out, job_select],
         )
         tailor_btn.click(
@@ -861,6 +970,8 @@ def build_app() -> gr.Blocks:
             tex_btn,
             loc_choices_state,
             loc_group,
+            jsearch_params_state,
+            param_add_dropdown,
         ]
         change_btn.click(reset, outputs=reset_outputs)
         restart_btn.click(reset, outputs=reset_outputs)

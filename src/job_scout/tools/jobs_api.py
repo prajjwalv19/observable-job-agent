@@ -36,6 +36,73 @@ DEFAULT_LIMIT = 25
 DEFAULT_COUNTRY = "us"
 CACHE_PATH = Path(__file__).resolve().parent.parent.parent.parent / "data" / "cached_jobs.json"
 
+# Human-facing JSearch filters exposed in the UI's "Add search param..." picker
+# (search-v2 endpoint, verified against RapidAPI's own parameter form). Each
+# entry's ``kind`` drives both the UI control and how the value is sent:
+#   - "enum": single choice, sent as-is.
+#   - "multi_enum": several choices, comma-joined before sending.
+#   - "text": free text (already comma-separated for the multi-value ones).
+# ``language`` is intentionally absent — the app hard-codes English and never
+# sends it. ``query``/``country`` are first-class controls elsewhere.
+# ``work_from_home`` is covered by the existing remote toggle. ``cursor`` is a
+# pagination token, not a human filter. ``num_pages`` stays hardcoded at 1 in
+# ``JSearchSource.fetch`` — each page is a separate request credit against a
+# 200/month quota, so it is deliberately never exposed here.
+JSEARCH_PARAM_REGISTRY: dict[str, dict[str, object]] = {
+    "date_posted": {
+        "kind": "enum",
+        "choices": ["all", "today", "3days", "week", "month"],
+        "example": "week",
+    },
+    "employment_types": {
+        "kind": "multi_enum",
+        "choices": ["FULLTIME", "CONTRACTOR", "PARTTIME", "INTERN"],
+        "example": "FULLTIME,CONTRACTOR",
+    },
+    "job_requirements": {
+        "kind": "multi_enum",
+        "choices": ["under_3_years_experience", "more_than_3_years_experience", "no_experience", "no_degree"],
+        "example": "no_experience,no_degree",
+    },
+    "radius": {
+        "kind": "text",
+        "choices": None,
+        "example": "50",
+    },
+    "exclude_job_publishers": {
+        "kind": "text",
+        "choices": None,
+        "example": "BeeBe,Dice",
+    },
+    "fields": {
+        "kind": "text",
+        "choices": None,
+        "example": "job_title,job_description,job_apply_link",
+    },
+}
+
+
+def _clean_extra_params(extra_params: dict[str, object] | None) -> dict[str, str]:
+    """Allow-list and normalise UI-selected JSearch params before sending.
+
+    Only keys present in ``JSEARCH_PARAM_REGISTRY`` survive — arbitrary keys are
+    silently dropped rather than forwarded. List/tuple/set values (multi-select
+    picks) are comma-joined; empty values are dropped entirely.
+    """
+    if not extra_params:
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, value in extra_params.items():
+        if key not in JSEARCH_PARAM_REGISTRY:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            value = ",".join(str(v) for v in value if v)
+        if value in (None, ""):
+            continue
+        cleaned[key] = str(value)
+    return cleaned
+
+
 _COUNTRY_CODES: dict[str, str] = {
     "united states": "us", "usa": "us", "us": "us", "america": "us",
     "united kingdom": "gb", "uk": "gb", "england": "gb", "london": "gb",
@@ -106,8 +173,22 @@ class JSearchSource:
         """Whether an API key is configured."""
         return bool(self.api_key)
 
-    def fetch(self, query: str, location: str | None, country: str | None, remote: bool, limit: int) -> list[JobPosting]:
-        """Fetch one page (10 results = 1 request credit; the free tier is small)."""
+    def fetch(
+        self,
+        query: str,
+        location: str | None,
+        country: str | None,
+        remote: bool,
+        limit: int,
+        extra_params: dict[str, object] | None = None,
+    ) -> list[JobPosting]:
+        """Fetch one page (10 results = 1 request credit; the free tier is small).
+
+        ``extra_params`` are human-set advanced filters from the UI (see
+        ``JSEARCH_PARAM_REGISTRY``); they are allow-listed and normalised by
+        ``_clean_extra_params`` before merging, so an unknown key is never
+        forwarded to the upstream API.
+        """
         if not self.available:
             return []
         params: dict[str, object] = {
@@ -117,6 +198,7 @@ class JSearchSource:
         }
         if remote:
             params["work_from_home"] = "true"
+        params.update(_clean_extra_params(extra_params))
         try:
             resp = httpx.get(
                 self.BASE,
@@ -304,12 +386,16 @@ def run_search(
     adzuna: AdzunaSource | None = None,
     remotive: RemotiveSource | None = None,
     cache: CacheSource | None = None,
+    jsearch_extra_params: dict[str, object] | None = None,
 ) -> tuple[list[JobPosting], list[str]]:
     """Search across the sources in order and return ``(jobs, sources_used)``.
 
     A source is only queried if the previous ones returned too few jobs. Results
     are merged, deduped by ``(title, company)`` and capped at ``limit``. The
     sources are injectable for testing. ``sources_used`` goes into trace metadata.
+    ``jsearch_extra_params`` are human-set advanced filters (see
+    ``JSEARCH_PARAM_REGISTRY``); they are forwarded to JSearch only — Adzuna and
+    Remotive don't share its parameter surface.
     """
     jsearch = jsearch or JSearchSource()
     adzuna = adzuna or AdzunaSource()
@@ -332,7 +418,10 @@ def run_search(
 
     fetchers: dict[str, Callable[[], list[JobPosting]]] = {}
     if jsearch.available:
-        fetchers["jsearch"] = _spanned("jsearch", lambda: jsearch.fetch(query, location, country, remote, limit))
+        fetchers["jsearch"] = _spanned(
+            "jsearch",
+            lambda: jsearch.fetch(query, location, country, remote, limit, extra_params=jsearch_extra_params),
+        )
     fetchers["adzuna"] = _spanned("adzuna", lambda: adzuna.fetch(query, location, country, remote, limit))
     fetchers["remotive"] = _spanned("remotive", lambda: remotive.fetch(query, location, country, remote, limit))
 

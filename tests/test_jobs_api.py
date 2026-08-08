@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import httpx
 
 from job_scout.tools.jobs_api import (
+    JSEARCH_PARAM_REGISTRY,
     AdzunaSource,
     CacheSource,
     JSearchSource,
@@ -114,14 +115,15 @@ def test_jsearch_builds_location_query_and_maps_fields(respx_mock):
             ],
         }
     }
-    route = respx_mock.get("https://api.openwebninja.com/jsearch/search-v2").mock(return_value=httpx.Response(200, json=payload))
+    route = respx_mock.get("https://jsearch.p.rapidapi.com/search-v2").mock(return_value=httpx.Response(200, json=payload))
     src = JSearchSource(api_key="test-key")
     jobs = src.fetch("data scientist", "Berlin, Germany", "de", False, 10)
     # location folded into the query, country passed through
     sent = route.calls.last.request
     assert "in Berlin, Germany" in sent.url.params["query"]
     assert sent.url.params["country"] == "de"
-    assert sent.headers["X-API-Key"] == "test-key"
+    assert sent.headers["x-rapidapi-key"] == "test-key"
+    assert sent.headers["x-rapidapi-host"] == "jsearch.p.rapidapi.com"
     # fields mapped; publisher attribution stripped from location
     assert jobs[0].title == "Data Scientist"
     assert jobs[0].company == "Acme GmbH"
@@ -145,6 +147,77 @@ def test_jsearch_primary_when_available():
     assert used == ["jsearch"]
     # Since Phase 3 sources fire concurrently; "skipped" means not CONSUMED.
     assert all(job.source != "adzuna" for job in jobs)
+
+
+def test_jsearch_forwards_registered_extra_params(respx_mock):
+    payload = {"data": {"jobs": []}}
+    route = respx_mock.get("https://jsearch.p.rapidapi.com/search-v2").mock(return_value=httpx.Response(200, json=payload))
+    src = JSearchSource(api_key="test-key")
+    src.fetch(
+        "data scientist",
+        None,
+        "us",
+        False,
+        10,
+        extra_params={
+            "date_posted": "week",
+            "employment_types": ["FULLTIME", "CONTRACTOR"],
+            "radius": "50",
+        },
+    )
+    sent = route.calls.last.request
+    assert sent.url.params["date_posted"] == "week"
+    assert sent.url.params["employment_types"] == "FULLTIME,CONTRACTOR"
+    assert sent.url.params["radius"] == "50"
+
+
+def test_jsearch_drops_unregistered_extra_params(respx_mock):
+    payload = {"data": {"jobs": []}}
+    route = respx_mock.get("https://jsearch.p.rapidapi.com/search-v2").mock(return_value=httpx.Response(200, json=payload))
+    src = JSearchSource(api_key="test-key")
+    src.fetch(
+        "data scientist",
+        None,
+        "us",
+        False,
+        10,
+        extra_params={"date_posted": "week", "language": "en", "num_pages": 5, "cursor": "abc", "made_up": "x"},
+    )
+    sent = route.calls.last.request
+    assert sent.url.params["date_posted"] == "week"
+    assert "language" not in sent.url.params
+    assert "cursor" not in sent.url.params
+    assert "made_up" not in sent.url.params
+    # num_pages stays hardcoded at 1, never overridden by a UI-supplied value
+    assert sent.url.params["num_pages"] == "1"
+
+
+def test_jsearch_extra_params_registry_shape():
+    """Every registry entry declares an unambiguous kind and an example value."""
+    for key, spec in JSEARCH_PARAM_REGISTRY.items():
+        assert spec["kind"] in ("enum", "multi_enum", "text")
+        assert spec.get("example")
+        if spec["kind"] in ("enum", "multi_enum"):
+            assert spec["choices"]
+    assert "language" not in JSEARCH_PARAM_REGISTRY
+    assert "work_from_home" not in JSEARCH_PARAM_REGISTRY
+    assert "cursor" not in JSEARCH_PARAM_REGISTRY
+    assert "num_pages" not in JSEARCH_PARAM_REGISTRY
+
+
+def test_run_search_forwards_extra_params_to_jsearch_only():
+    jsearch = MagicMock()
+    jsearch.available = True
+    jsearch.fetch.return_value = [make_job(f"js{i}", f"Role {i}", f"Co{i}", "jsearch") for i in range(6)]
+    adzuna = _fake_source("adzuna", [])
+    remotive = _fake_source("remotive", [])
+    cache = _fake_source("cache", [])
+    extra = {"date_posted": "week"}
+    run_search("ds", jsearch=jsearch, adzuna=adzuna, remotive=remotive, cache=cache, jsearch_extra_params=extra)
+    jsearch.fetch.assert_called_once_with("ds", None, None, False, 25, extra_params=extra)
+    for call in adzuna.fetch.call_args_list + remotive.fetch.call_args_list:
+        assert "extra_params" not in call.kwargs
+        assert extra not in call.args
 
 
 def test_cache_source_keyword_match(tmp_path):

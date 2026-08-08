@@ -19,12 +19,15 @@ class AgentState(TypedDict, total=False):
     unset → job search). ``linkedin_zip_path`` is a filesystem path only — the
     export ZIP itself is never logged, committed, or attached to a trace.
     ``fabrication_flags``/``fabrication_report`` are written by the
-    ``validate_tailoring`` node.
+    ``validate_tailoring`` node. ``jsearch_extra_params`` carries the human-set
+    advanced JSearch filters from the UI (see ``JSEARCH_PARAM_REGISTRY`` in
+    ``tools/jobs_api.py``) through to ``fetch_jobs``.
     """
 
     cv_text: str
     profile: Profile | None
     search_query: str | None
+    jsearch_extra_params: dict[str, object] | None
     jobs: list[JobPosting]
     ranked_jobs: list[RankedJob]
     reformulation_count: int

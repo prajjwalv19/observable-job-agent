@@ -70,12 +70,15 @@ def stream_search(
     thread_id: str,
     tags: list[str],
     selected_job_id: str | None = None,
+    jsearch_extra_params: dict[str, object] | None = None,
 ) -> Iterator[tuple[str, object]]:
     """Run the job-finding graph for an already-extracted profile.
 
     Yields ``("status", msg)`` per node and finally ``("result", RunResult)``.
     ``selected_job_id`` is passed explicitly on every invocation (default ``None``)
     so a run never routes into stale Phase 2 tailoring on a reused thread.
+    ``jsearch_extra_params`` carries the human-set advanced JSearch filters from
+    the UI through to ``fetch_jobs`` (see ``JSEARCH_PARAM_REGISTRY``).
     """
     settings = get_settings()
     tracer = get_tracer(thread_id, tags)
@@ -85,7 +88,12 @@ def stream_search(
     callbacks = [usage_cb] + ([tracer] if tracer else [])
 
     graph = trace_graph(get_compiled_graph(), tracer)
-    inputs = {"profile": profile, "cv_text": cv_text, "selected_job_id": selected_job_id}
+    inputs = {
+        "profile": profile,
+        "cv_text": cv_text,
+        "selected_job_id": selected_job_id,
+        "jsearch_extra_params": jsearch_extra_params,
+    }
     config = {"configurable": {"thread_id": thread_id}, "callbacks": callbacks, "recursion_limit": 25}
 
     result = RunResult(opik_url=opik_url(), profile=profile)
